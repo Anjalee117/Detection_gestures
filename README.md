@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/title.svg" alt="Sign Language Detection" width="820">
+<img src="docs/title.svg" alt="Sign Language Detection Using Deep-Learning" width="880">
 
 <br>
 
@@ -186,28 +186,6 @@ Worth being honest about these.
 - **System voices.** Speech quality is whatever your operating system provides.
 
 <img src="docs/divider.svg" width="100%" alt="">
-
-## Credits
-
-The keypoint classification approach and the original training pipeline come from
-[AkramOM606/American-Sign-Language-Detection](https://github.com/AkramOM606/American-Sign-Language-Detection),
-released under the MIT License. We recorded our own dataset, retrained the classifier, and built the
-Tkinter interface, the sentence building and the text to speech on top of it.
-
-## Team
-
-Final year project, Department of Computer Science & Engineering,
-**Agnihotri College of Engineering**, Nagthana, Sindi (Meghe), Wardha, Maharashtra.
-
-<table>
-<tr><td width="50%">Shoaib Patel</td><td width="50%">Tanmay Sune</td></tr>
-<tr><td>Aniket Kalushe</td><td>Vishakha Shete</td></tr>
-</table>
-
-Project guide: **Asst. Prof. A. S. Kamble**
-
-Published as *A Review on Sign Language Detection Using Deep Learning*, IRJMETS, Volume 06, Issue 11,
-November 2024, [DOI 10.56726/IRJMETS64500](https://www.doi.org/10.56726/IRJMETS64500).
 
 ## License
 
