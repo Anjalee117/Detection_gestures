@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 215" width="940" height="215" role="img" aria-label="Sign Language Detection">
+  <defs>
+    <linearGradient id="shimmer" gradientUnits="userSpaceOnUse" x1="-460" y1="0" x2="0" y2="0">
+      <stop offset="0" stop-color="#2f6fd0"/>
+      <stop offset="0.45" stop-color="#38bdf8"/>
+      <stop offset="0.55" stop-color="#5eead4"/>
+      <stop offset="1" stop-color="#2f6fd0"/>
+      <animate attributeName="x1" values="-460;940" dur="4.5s" repeatCount="indefinite"/>
+      <animate attributeName="x2" values="0;1400" dur="4.5s" repeatCount="indefinite"/>
+    </linearGradient>
+    <linearGradient id="rule" gradientUnits="userSpaceOnUse" x1="180" y1="0" x2="670" y2="0">
+      <stop offset="0" stop-color="#3c8ce7" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#3c8ce7"/>
+      <stop offset="1" stop-color="#5eead4" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- hand-landmark motif -->
+  <circle cx="86" cy="118" r="26" fill="none" stroke="#3c8ce7" stroke-width="1.5" opacity="0">
+    <animate attributeName="r" values="18;46" dur="3s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.5;0" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <g stroke="#3c8ce7" stroke-width="2" stroke-linecap="round" fill="#5eead4">
+    <g>
+      <line x1="86" y1="118" x2="86" y2="74"/>
+      <line x1="86" y1="118" x2="62" y2="86"/>
+      <line x1="86" y1="118" x2="110" y2="82"/>
+      <line x1="86" y1="118" x2="128" y2="102"/>
+      <line x1="86" y1="118" x2="48" y2="112"/>
+      <circle cx="86" cy="118" r="5"/>
+      <circle cx="86" cy="74" r="4"/>
+      <circle cx="62" cy="86" r="4"/>
+      <circle cx="110" cy="82" r="4"/>
+      <circle cx="128" cy="102" r="4"/>
+      <circle cx="48" cy="112" r="4"/>
+      <animateTransform attributeName="transform" type="rotate"
+                        values="-4 86 118; 4 86 118; -4 86 118" dur="5s" repeatCount="indefinite"/>
+    </g>
+  </g>
+
+  <text x="176" y="96"
+        font-family="Segoe UI Semibold, Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="54" font-weight="700" letter-spacing="3.5" fill="url(#shimmer)">SIGN LANGUAGE</text>
+  <text x="176" y="150"
+        font-family="Segoe UI Semibold, Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="54" font-weight="700" letter-spacing="17.5" fill="url(#shimmer)">DETECTION</text>
+
+  <line x1="180" y1="172" x2="670" y2="172" stroke="url(#rule)" stroke-width="2"
+        stroke-dasharray="490" stroke-dashoffset="0">
+    <animate attributeName="stroke-dashoffset" from="490" to="0" dur="1.4s" fill="freeze"/>
+  </line>
+
+  <text x="180" y="198"
+        font-family="Segoe UI, Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-size="15" font-weight="600" letter-spacing="4.2" fill="#64748b">REAL-TIME ASL TO TEXT TO SPEECH</text>
+</svg>

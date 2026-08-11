@@ -1,0 +1,10 @@
+opencv-python
+mediapipe
+tensorflow==2.16.1
+Pillow
+pyttsx3
+numpy
+pandas
+seaborn
+scikit-learn
+matplotlib
