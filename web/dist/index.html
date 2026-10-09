@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign Language Live</title>
+  <meta name="description" content="Recognize static alphabet poses with your webcam, capture letters, and speak a sentence. Camera processing stays on your device.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b1524'/%3E%3Cpath d='M9 11h14M9 16h10M9 21h14' stroke='%234ce1ac' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <header><a class="brand" href="./"><span class="mark" aria-hidden="true">S</span>Sign Language <span class="live">Live</span></a><span class="privacy">Camera processing stays on your device</span></header>
+  <main>
+    <div class="heading"><div><p class="eyebrow">STATIC ALPHABET RECOGNITION</p><h1>Sign. Capture. Speak.</h1></div><p>Hold one hand in view. Keep the pose steady, then capture your letter.</p></div>
+    <div class="workspace">
+      <section class="camera-card" aria-label="Camera preview">
+        <div class="card-top"><h2>Your camera</h2><span id="camera-state">Camera off</span></div>
+        <div class="viewport">
+          <video id="video" playsinline muted hidden></video><canvas id="preview" aria-label="Live mirrored camera preview"></canvas>
+          <div id="placeholder"><span class="camera-icon" aria-hidden="true">◉</span><h3>Your hands, your words.</h3><p>Start the camera and allow access<br>when your browser asks.</p></div>
+        </div>
+        <div class="camera-controls"><select id="camera" aria-label="Select camera"><option value="">Default camera</option></select><button id="start" class="primary">Start camera</button><button id="stop" disabled>Stop</button></div>
+        <p id="message" class="message" role="status" aria-live="polite">Camera starts only when you choose.</p>
+      </section>
+      <aside class="recognition-card">
+        <h2>Current letter</h2><div id="letter" class="letter" aria-live="polite">—</div>
+        <div id="recognition-status" class="recognition-status">NO HAND</div>
+        <div class="metric"><span>Confidence</span><strong id="confidence">—</strong></div><progress id="confidence-bar" max="1" value="0" aria-label="Prediction confidence"></progress>
+        <div class="metric"><span>Stable frames</span><strong id="stability">0 / 5</strong></div><div class="frame-dots" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+        <button id="capture" class="primary capture" disabled>Capture letter <kbd>Enter</kbd></button>
+        <p class="small">Capture unlocks after 5 matching frames at 70% confidence or above.</p>
+      </aside>
+      <section class="sentence-card">
+        <div class="card-top"><h2>Your sentence</h2><span id="count">0 characters</span></div>
+        <div id="sentence" class="sentence empty" role="log" aria-live="polite">Captured letters will appear here.</div>
+        <div class="sentence-controls"><button id="space" disabled>Add space <kbd>Space</kbd></button><button id="delete" disabled>Delete <kbd>⌫</kbd></button><button id="clear" disabled>Clear</button><div class="speech-controls"><select id="voice" aria-label="Speaking voice"><option>No voices loaded</option></select><button id="speak" class="primary" disabled>Speak sentence</button></div></div>
+        <p id="speech-message" class="message" role="status" aria-live="polite"></p>
+      </section>
+    </div>
+    <footer><p>Static alphabet recognition only. J/Z motion and full sign-language translation are unsupported.</p><p>U, L and T may need extra care. Check captured letters before speaking.</p></footer>
+  </main>
+</body>
+</html>

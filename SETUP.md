@@ -1,234 +1,168 @@
-# Setup Guide
+# Setup
 
-Two parts here. **Part A** is the one-time installation you do on a fresh machine.
-**Part B** is the short version you use every time you come back to the project afterwards.
+Static alphabet recognition; J/Z motion and full sign-language translation are unsupported.
+The trained runtime model is included. Training is optional.
 
-If you just want to get it running, do Part A once, then Part B forever.
+## First installation
 
----
-
-## Part A - First time installation
-
-### A1. Check what you have
-
-| Requirement | Why | How to check |
-|---|---|---|
-| Python 3.9 (64-bit) | MediaPipe and TensorFlow 2.16.1 wheels are built for it | `python --version` |
-| pip | Installs the packages | `pip --version` |
-| A working webcam | The whole app is a camera loop | Open the Camera app on Windows |
-| Visual C++ Redistributable (Windows only) | MediaPipe and OpenCV ship native DLLs that need it | Try the install, you will see a DLL error if it is missing |
-
-If `python --version` shows something other than 3.9, that is usually fine for running the app, but
-TensorFlow 2.16.1 is not published for very new Python versions and pip will fail to find it.
-Python 3.9 to 3.11 is the safe range.
-
-Downloads if you need them:
-
-- Python 3.9.13 (64-bit): https://www.python.org/downloads/release/python-3913/
-- Visual C++ Redistributable x64: https://aka.ms/vs/17/release/vc_redist.x64.exe
-
-When installing Python on Windows, tick **Add Python to PATH** on the first screen. It saves a lot of pain later.
-
-### A2. Get the code
+Use 64-bit Python 3.9–3.11, Tkinter, and a webcam. This stack was validated on
+macOS arm64 with Python 3.9.6 (training) and Python 3.11.17 / Tk 9.0 (repaired GUI).
+Windows and Linux still require platform testing.
+For a fresh macOS installation, use python.org Python with bundled Tkinter.
 
 ```bash
-git clone https://github.com/<your-username>/<repo-name>.git
-cd <repo-name>
-```
-
-Or download the ZIP from GitHub and extract it, then open a terminal inside the extracted folder.
-
-### A3. Make a virtual environment
-
-This keeps the project's packages separate from the rest of your system, so nothing you install here
-can break another project.
-
-Windows (PowerShell or CMD):
-
-```bash
-python -m venv venv
-```
-
-Linux or macOS:
-
-```bash
+git clone https://github.com/Tanmaysune/sign_language.git
+cd sign_language
 python3 -m venv venv
-```
-
-### A4. Activate it
-
-Windows (CMD):
-
-```bash
-venv\Scripts\activate
-```
-
-Windows (PowerShell):
-
-```bash
-venv\Scripts\Activate.ps1
-```
-
-Linux or macOS:
-
-```bash
 source venv/bin/activate
-```
-
-Your prompt should now start with `(venv)`. That is how you know it worked.
-
-> PowerShell may refuse with "running scripts is disabled on this system". Fix it once with
-> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` and then activate again.
-
-### A5. Install the packages
-
-```bash
 python -m pip install --upgrade pip
-```
-
-```bash
-pip install -r requirements.txt
-```
-
-This pulls in TensorFlow, MediaPipe, OpenCV, Pillow, pyttsx3 and the training libraries.
-It downloads a few hundred megabytes and takes several minutes on a normal connection. Let it finish.
-
-### A6. Tkinter check
-
-Tkinter draws the interface. It comes bundled with the official Python installer on Windows and macOS,
-so you almost certainly already have it. On Debian or Ubuntu it is a separate package:
-
-```bash
-sudo apt install python3-tk
-```
-
-Verify it either way:
-
-```bash
-python -c "import tkinter; print('tkinter ok')"
-```
-
-### A7. Linux only - a voice for the speech output
-
-`pyttsx3` speaks through the system speech engine. Windows has SAPI5 built in and macOS has NSSpeech,
-so both work out of the box. Linux needs espeak:
-
-```bash
-sudo apt install espeak
-```
-
-### A8. Run it
-
-```bash
+python -m pip install -r requirements.txt
+python -c "import tkinter; print('Tkinter available')"
 python app.py
 ```
 
-A loading screen appears for about five seconds, then the welcome form. Type a name, choose a voice,
-press **Start Conversation**, and the camera window opens with live hand tracking.
+On Windows, use `python` instead of `python3`, then activate with
+`venv\Scripts\activate` (CMD) or `venv\Scripts\Activate.ps1` (PowerShell).
+Windows native DLL errors may require the Visual C++ Redistributable:
+https://aka.ms/vs/17/release/vc_redist.x64.exe.
 
-Installation is done. From now on, use Part B.
+On Debian/Ubuntu, install Tkinter and the speech engine before running:
 
----
+```bash
+sudo apt install python3-tk espeak
+```
 
-## Part B - Starting it again next time
+Enter a name, choose an actual installed voice, and open the dashboard. Voice
+loading happens in the background. Speech errors appear in the speech status.
 
-Every session after the first is three commands. The virtual environment already exists, the packages
-are already installed. You only need to switch it on again.
+## Open the visible window on macOS
+
+The repaired local GUI uses `.venv` with project-local Python 3.11 and modern Tk.
+Activate it with `source .venv/bin/activate`. `run.command` prefers `.venv` and
+falls back to `venv` if the GUI environment is absent. Apple system Python/Tk 8.5
+can produce a black preview; use a modern Python/Tk installation for the GUI.
+
+Double-click `run.command` in Finder, or run `open run.command` from the project
+folder. Terminal launches the app and the welcome window is brought forward.
+The camera stays off until you press **OPEN DASHBOARD**. Use **STOP CAMERA** to
+release it; **SELECT / RETRY** starts it again. Close the window to exit.
+
+## Subsequent runs
+
+From the project folder on this repaired macOS installation:
+
+```bash
+source .venv/bin/activate
+python app.py
+```
 
 Windows:
 
-```bash
-cd path\to\<repo-name>
-```
-
-```bash
+```bat
 venv\Scripts\activate
-```
-
-```bash
 python app.py
 ```
 
-Linux or macOS:
+Model and label paths resolve relative to `app.py`; launching with an absolute
+path also works. Leave the environment with `deactivate`.
 
-```bash
-cd path/to/<repo-name> && source venv/bin/activate && python app.py
-```
+## Recognition and controls
 
-That is the whole routine. If the prompt does not show `(venv)`, the activate step did not take and
-Python will not find the packages, so check that first before assuming something is broken.
+| Key | Action |
+|---|---|
+| G | Capture only when the prediction is READY |
+| Space | Insert a space |
+| D | Delete the last character |
+| C | Clear the sentence |
+| S | Speak using the selected installed voice |
 
-### Useful flags
+The app tracks one active hand. A letter must exceed the confidence threshold
+for N consecutive frames. A changed letter, missing hand, uncertain prediction,
+camera failure, or stale frame resets the capture streak. Each capture starts a
+new streak, so held keys cannot commit unvalidated letters.
 
-| Flag | Default | What it is for |
+| Flag | Default | Validation |
 |---|---|---|
-| `--device` | `0` | Camera index. Use `1` or `2` if you have more than one camera |
-| `--width` | `1050` | Capture width |
-| `--height` | `740` | Capture height |
-| `--min_detection_confidence` | `0.7` | Raise it if it detects hands that are not there |
-| `--min_tracking_confidence` | `0.5` | Raise it for steadier tracking, lower it if tracking keeps dropping |
-
-Example:
-
-```bash
-python app.py --device 1 --min_detection_confidence 0.8
-```
-
-### Leaving the environment
+| `--device` | 0 | Nonnegative camera index |
+| `--width` | 1050 | Positive capture width |
+| `--height` | 740 | Positive capture height |
+| `--min_detection_confidence` | 0.7 | Finite value in [0, 1] |
+| `--min_tracking_confidence` | 0.5 | Finite value in [0, 1] |
+| `--confidence_threshold` | 0.7 | Finite value in [0, 1] |
+| `--stable_frames` | 5 | Positive consecutive-frame count |
+| `--use_static_image_mode` | Off | Detect independently on each frame |
 
 ```bash
-deactivate
+python app.py --device 1 --confidence_threshold 0.8 --stable_frames 7
 ```
 
----
+The dashboard's camera-index field and **SELECT / RETRY** button switch or reopen
+cameras. Failed opens/reads automatically release and retry after one second.
+Camera reads and inference run on a worker; speech uses a separate worker.
+macOS playback uses the native `say` process with the selected voice ID; Windows/Linux use pyttsx3.
 
-## Retraining the model
-
-Only needed if you change the dataset. The trained model is already committed, so the app runs without this.
+## Training and evaluation
 
 ```bash
-pip install jupyter
+python -m pip install -r requirements-training.txt
+python -m ipykernel install --prefix venv --name sign-language
+python training/run_notebook.py
+python -m pytest -q tests
+python tests/gui_smoke.py  # Desktop checks; simulated camera only
 ```
 
-```bash
-jupyter notebook keypoint_classification.ipynb
-```
+Run these from the project root. `training/run_notebook.py` executes every cell
+and saves outputs in `keypoint_classification.ipynb`. It expects the virtual
+environment to be named `venv` as above. VS Code can also run the notebook using
+that environment's kernel.
 
-Run the cells from top to bottom. The notebook reads `model/keypoint_classifier/keypoint.csv`,
-trains the network, prints the confusion matrix and classification report, and writes both
-`keypoint_classifier.keras` and the quantised `keypoint_classifier.tflite` that the app loads at startup.
+The loader requires exactly 43 finite columns per row: integer class 0–25 plus
+42 normalized features. The joined 85-column legacy row 35,522 was removed;
+36,401 valid samples remain. Malformed rows now stop training with a line-number
+error.
 
----
+The default split is 70% training, 15% validation, and 15% untouched test.
+Training-only class weights balance the class counts. Early stopping selects
+weights using validation loss only, then restores the best checkpoint.
+Keras is saved and reloaded in the current environment. Frozen inference export
+avoids the previous converter failure. TFLite is written only after at least
+99% agreement with Keras over the test partition; quantization is not exact.
+
+Artifacts in `model/keypoint_classifier/`:
+
+- `keypoint_classifier.keras`, `keypoint_classifier.tflite`: matching trained exports.
+- `evaluation.json`: split method, accuracy, class precision/recall, weights and hashes.
+- `test_per_class.csv`, `confusion_matrix.png`: test report; U/D/L/T marked for review.
+- `split_manifest.npz`: exact sample indices and dataset hash for each partition.
+
+Legacy signer/session IDs are unknown. Do not invent them. Current results are
+sample-split accuracy, not unseen-signer/session accuracy. Complete, genuine
+`sample_metadata.csv` enables whole-session holdout automatically; its schema
+and validation rules are in [training/PROVENANCE.md](training/PROVENANCE.md).
 
 ## Troubleshooting
 
-**The camera window is black or the app closes immediately.**
-Another program is holding the camera. Close Zoom, Teams, Meet or the Camera app and try again.
-If you have more than one camera, try `python app.py --device 1`.
+**Camera offline:** close other apps using the webcam, check the selected index,
+and press SELECT / RETRY. On macOS, allow Terminal or VS Code under
+System Settings > Privacy & Security > Camera. Reopen that app after changing access.
 
-**`ImportError: DLL load failed while importing ...` on Windows.**
-The Visual C++ Redistributable is missing. Install `vc_redist.x64.exe` from the link in step A1 and reboot.
+**Startup error:** the dashboard reports missing/broken model or label files.
+Restore the included artifacts or rerun training. Missing imports at launch report
+an installation error; activate the environment and reinstall `requirements.txt`.
 
-**`ModuleNotFoundError: No module named 'cv2'` (or mediapipe, or pyttsx3).**
-The virtual environment is not active, or the install did not finish. Activate it and run
-`pip install -r requirements.txt` again.
+**Speech unavailable:** check installed system voices; on Linux install espeak.
+The welcome screen lists real voice names rather than assumed male/female indexes.
 
-**`ERROR: Could not find a version that satisfies the requirement tensorflow==2.16.1`.**
-Your Python is too new or is 32-bit. Check with `python -c "import platform; print(platform.python_version(), platform.architecture())"`.
-You want 3.9 to 3.11 and 64-bit.
+**OpenCV conflicts:** only `opencv-contrib-python` is required. If both OpenCV
+packages are installed, repair the environment:
 
-**Nothing is spoken when I press S.**
-On Linux, install espeak (step A7). On Windows, check that Windows has at least one voice installed under
-Settings, Time and language, Speech. The app picks voice index 0 for male and index 1 for female, so if
-your system only has one voice installed, the female option falls back to whatever is there.
+```bash
+python -m pip uninstall -y opencv-python opencv-contrib-python
+python -m pip install -r requirements.txt
+```
 
-**The TFLite conversion cell in the notebook fails.**
-Use TensorFlow 2.16.1 exactly. Later versions changed the converter API and that cell breaks.
-
-**Detection is jumpy or predicts the wrong letter.**
-Improve the lighting, put some distance between your hand and the background, and keep only one hand in
-frame. Hold the sign still until the label on the video settles, then press `G` to capture it.
-
-**`FileNotFoundError: ./assets/banner.jpg`.**
-You are running the app from the wrong folder. All paths are relative to the project root, so
-`cd` into the folder that contains `app.py` before running it.
+**Environment warnings:** this macOS environment reports an old-system-Python
+LibreSSL warning. Some universal MediaPipe/gRPC wheels contain Intel-only tags
+inside their metadata, so `pip check` can report unsupported architecture despite
+successful native runtime checks. Fresh installs and other platforms still need
+validation; do not treat those warnings as proof of a clean dependency check.

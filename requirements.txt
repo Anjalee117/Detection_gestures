@@ -1,10 +1,14 @@
-opencv-python
-mediapipe
+# Runtime dependencies validated on macOS arm64 / Python 3.9.6 and 3.11.17.
+opencv-contrib-python==4.11.0.86
+mediapipe==0.10.14
 tensorflow==2.16.1
-Pillow
-pyttsx3
-numpy
-pandas
-seaborn
-scikit-learn
-matplotlib
+keras==3.10.0
+ml-dtypes==0.3.2
+jax==0.4.30
+jaxlib==0.4.30
+Pillow==11.3.0
+pyttsx3==2.99
+numpy==1.26.4
+protobuf==4.25.9
+grpcio==1.80.0
+pyobjc==11.1; sys_platform == "darwin"

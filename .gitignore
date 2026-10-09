@@ -5,6 +5,8 @@ __pycache__/
 *.so
 build/
 dist/
+!web/dist/
+!web/dist/**
 *.egg-info/
 
 # Virtual environments
@@ -34,3 +36,6 @@ Tests_dir/
 # Installers and other large local-only files
 *.exe
 *.msi
+
+# Project-local Python for the macOS GUI
+.runtime/

@@ -13,7 +13,9 @@
 
 <br><br>
 
-**Sign the alphabet at your webcam. It types the letters, builds the sentence, and says it out loud.**
+**Static alphabet recognition; J/Z motion and full sign-language translation are unsupported.**
+
+Capture stable letters at your webcam, build a sentence, and speak it using a system voice.
 
 Runs offline on an ordinary laptop. No GPU, no internet, no cloud API.
 
@@ -28,7 +30,7 @@ That gap is the whole reason this project exists.
 
 This app sits in the middle of that conversation. It watches your hand through a normal webcam,
 recognises the American Sign Language letter you are making, lets you stack those letters into words and
-sentences, and then speaks the finished sentence in a male or female voice. The person on the other side
+sentences, and then speaks the finished sentence using an installed system voice. The person on the other side
 never has to learn a sign.
 
 It was built as our final year B.Tech project in Computer Science & Engineering, and the approach behind
@@ -36,26 +38,19 @@ it was published as a review paper in IRJMETS in November 2024.
 
 <img src="docs/divider.svg" width="100%" alt="">
 
-## Demo
+## Interface
 
-<div align="center">
+**[Open the live web app](https://sign-language-live.azure-vine-9967.chatgpt.site)** —
+anyone can access it. Press **Start camera** and allow webcam access. Camera
+processing stays on your device. See [web/README.md](web/README.md) for web setup.
 
-<img src="docs/demo.gif" alt="The app in use: welcome screen, then live recognition" width="720">
+The welcome screen asks for a name and lists installed system voices. The dashboard
+shows one active hand, prediction confidence, consecutive-frame stability, the sentence,
+and camera selection/retry/stop controls. Capture is disabled until the prediction is READY.
+On macOS, double-click `run.command` to open the welcome window. The camera stays off
+until you open the dashboard.
 
-</div>
-
-<table>
-<tr>
-<td width="50%" valign="top">
-<img src="docs/screenshots/welcome-screen.png" alt="Welcome screen" width="100%">
-<p align="center"><sub><b>Start screen.</b> Your name is shown during the session and the voice you pick here is the one that speaks.</sub></p>
-</td>
-<td width="50%" valign="top">
-<img src="docs/screenshots/live-detection.png" alt="Live recognition" width="100%">
-<p align="center"><sub><b>Live recognition.</b> The hand skeleton is drawn on the frame and the predicted letter sits on the bounding box.</sub></p>
-</td>
-</tr>
-</table>
+Previous screenshots and the demo GIF show the old interface and are no longer embedded.
 
 <img src="docs/divider.svg" width="100%" alt="">
 
@@ -63,10 +58,12 @@ it was published as a review paper in IRJMETS in November 2024.
 
 | Feature | What it means in practice |
 |---|---|
-| **Real-time recognition** | The full ASL alphabet, A to Z, straight from a webcam feed |
+| **Static recognition** | 26 trained pose classes; actual J/Z motion is unsupported |
+| **Reliable capture** | Confidence threshold plus consecutive-frame stability; uncertain predictions cannot be captured |
 | **Hand tracking overlay** | 21 landmarks, a bounding box, the detected hand and the predicted letter drawn live |
 | **Sentence building** | Capture letters one at a time, add spaces, backspace a mistake, clear and start over |
-| **Speech output** | The finished sentence is spoken aloud, with a male or female voice |
+| **Speech output** | Installed voice names; background playback keeps the dashboard responsive |
+| **Camera recovery** | Select a camera index, retry manually, or let failed captures reopen automatically |
 | **Keyboard driven** | Every action has a shortcut, because one hand is already busy signing |
 | **Fully offline** | Nothing leaves the machine. The model is 25 KB and runs on CPU |
 
@@ -109,29 +106,36 @@ Exported to TFLite with default quantisation, which is the 25 KB file the app ac
 
 | Measure | Value |
 |---|---|
-| Dataset | ~36,400 landmark samples we recorded ourselves |
+| Dataset | 36,401 validated landmark samples |
 | Classes | 26 (A to Z) |
-| Split | 75 / 25 train / test |
-| Test accuracy | **~86%** on the held-out split |
-| Model size | 235 KB Keras, 25 KB quantised TFLite |
+| Split | 70 / 15 / 15 train / validation / untouched test |
+| Test accuracy | **84.12% TFLite**, 84.20% Keras on 5,461 untouched test samples |
+| Keras/TFLite agreement | **99.32%**; quantization causes small prediction differences |
+| Model size | 243 KB Keras, 25 KB quantised TFLite |
 
-Most of the remaining error sits between letters that look nearly identical as still poses, M, N, S and T
-in particular. The confusion matrix in the notebook shows exactly where.
+Early stopping uses validation only; class weights are computed from training data only.
+Legacy signer/session IDs are unavailable, so these are sample-split results and do not establish
+accuracy on unseen people or recording sessions. Complete provenance metadata enables session holdout;
+see [training/PROVENANCE.md](training/PROVENANCE.md).
+
+Watch-class recalls: **U 62.1%, D 93.8%, L 78.9%, T 78.7%**. Full precision/recall and reproducible
+split/model hashes are in [evaluation.json](model/keypoint_classifier/evaluation.json),
+[test_per_class.csv](model/keypoint_classifier/test_per_class.csv), and the notebook.
 
 <img src="docs/divider.svg" width="100%" alt="">
 
 ## Quick start
 
 ```bash
-git clone https://github.com/<your-username>/<repo-name>.git
-cd <repo-name>
+git clone https://github.com/Tanmaysune/sign_language.git
+cd sign_language
 python -m venv venv
 venv\Scripts\activate          # Linux or macOS: source venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python app.py
 ```
 
-You need **Python 3.9** and a webcam. On Windows you also need the Visual C++ Redistributable, and on
+You need **Python 3.9–3.11** and a webcam. On Windows you also need the Visual C++ Redistributable, and on
 Linux you need `python3-tk` plus `espeak` for the voice.
 
 Full walkthrough, including how to start it again on later days and what to do when something breaks:
@@ -147,17 +151,33 @@ Full walkthrough, including how to start it again on later days and what to do w
 | `C` | Clear | Wipes the sentence |
 | `S` | Speak | Reads the sentence out loud |
 
-The prediction updates on every single frame, so nothing is committed until you press `G`. Hold the sign
-steady, wait for the label to settle, then capture.
+Capture is enabled only after five consecutive confident frames (default threshold 0.7).
+Press `G` or Capture when the status shows `READY`; `UNCERTAIN` displays `?`.
+Use `--confidence_threshold 0.8 --stable_frames 7` to change the policy.
+Camera reads, inference, and speech run on background workers.
 
 <img src="docs/divider.svg" width="100%" alt="">
+
+## Training and checks
+
+```bash
+python -m pip install -r requirements-training.txt
+python -m ipykernel install --prefix venv --name sign-language
+python training/run_notebook.py
+python -m pytest -q tests
+```
+
+Validated locally on macOS arm64 with Python 3.9.6; Windows/Linux need platform validation.
+The notebook rejects malformed rows, restores the best validation checkpoint, reloads Keras,
+and requires at least 99% test-prediction agreement before writing the TFLite export.
 
 ## Project structure
 
 ```
-app.py                                  Tkinter UI, camera loop, recognition, speech
+app.py                                  Tkinter dashboard and frame processor
 keypoint_classification.ipynb           Training and evaluation notebook
-requirements.txt                        Python dependencies
+requirements.txt                        Pinned runtime dependencies
+requirements-training.txt               Pinned training and test dependencies
 SETUP.md                                Installation and day-to-day run guide
 
 model/keypoint_classifier/
@@ -167,7 +187,11 @@ model/keypoint_classifier/
     keypoint_classifier.keras           Trained Keras model
     keypoint_classifier.tflite          Quantised model used at runtime
 
-utils/cvfpscalc.py                      FPS counter
+utils/landmarks.py                      Landmark normalization
+utils/recognition.py                    Confidence/stability capture gate
+utils/workers.py                        Camera recovery, inference and speech workers
+training/                               Strict loader, session splits and notebook runner
+tests/                                  pytest coverage
 assets/                                 Banner and loading animation
 docs/                                   README images and diagrams
 ```
@@ -176,12 +200,9 @@ docs/                                   README images and diagrams
 
 ## Known limitations
 
-Worth being honest about these.
-
-- **Static alphabet only.** J and Z need motion in real ASL. Here they are judged on hand shape alone, so
-  they are the least reliable letters.
+- **Static alphabet recognition; J/Z and full translation unsupported.** J/Z dataset classes are static poses and cannot recognize the required motion.
 - **Lighting matters.** A dim room, or a background the same colour as your hand, and detection suffers.
-- **One hand at a time** gives the cleanest results, even though the tracker is configured for two.
+- **One active hand only.** The first tracked hand supplies the prediction.
 - **Letters, not words.** The app spells out sentences. It does not recognise word-level signs or grammar.
 - **System voices.** Speech quality is whatever your operating system provides.
 

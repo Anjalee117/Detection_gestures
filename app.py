@@ -1,298 +1,408 @@
-import os
+from pathlib import Path
 import csv
-import copy
 import argparse
-import itertools
+import sys
 import time
-import threading
 
-import cv2 as cv
-import numpy as np
-import mediapipe as mp
-import pyttsx3
+try:
+    import cv2 as cv
+    import numpy as np
 
-import tkinter as tk
-from tkinter import ttk
-from tkinter.ttk import *
-from tkinter import StringVar, Radiobutton, PhotoImage
-from PIL import Image, ImageTk, ImageDraw, ImageFilter
-from itertools import count, cycle
+    import tkinter as tk
+    from tkinter import ttk
+    from tkinter import StringVar
+except ImportError as error:
+    raise SystemExit(f"STARTUP ERROR / {error}. Install requirements.txt and ensure Tkinter is available.")
 
-from utils.cvfpscalc import CvFpsCalc
+from utils.preview import VideoPreview
+from utils.landmarks import pre_process_landmark
+from utils.recognition import CaptureGate
+from utils.workers import CameraWorker, SpeechWorker
+from queue import Empty
 from model.keypoint_classifier.keypoint_classifier import KeyPointClassifier
 
-gender = 'Male'
-# GIF Part
-# ================== UI Part ======================
-class ImageLabel(tk.Label):
-    """
-    A Label that displays images, and plays them if they are gifs
-    :im: A PIL Image instance or a string filename
-    """
-    def load(self, im):
-        if isinstance(im, str):
-            im = Image.open(im)
-        frames = []
+PROJECT_ROOT = Path(__file__).resolve().parent
 
-        try:
-            for i in count(1):
-                frames.append(ImageTk.PhotoImage(im.copy()))
-                im.seek(i)
-        except EOFError:
-            pass
-        self.frames = cycle(frames)
-
-        try:
-            # self.delay = im.info['duration']
-            self.delay = 10
-        except:
-            self.delay = 10
-
-        if len(frames) == 1:
-            self.config(image=next(self.frames))
-        else:
-            self.next_frame()
-
-    def unload(self):
-        self.config(image=None)
-        self.frames = None
-
-    def next_frame(self):
-        if self.frames:
-            self.config(image=next(self.frames))
-            self.after(self.delay, self.next_frame)
+def positive_int(value):
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
 
 
-def get_args():
-    parser = argparse.ArgumentParser()
+def device_index(value):
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("camera index must be nonnegative")
+    return number
 
-    parser.add_argument("--device", type=int, default=0)
-    parser.add_argument("--width", help="cap width", type=int, default=1050)
-    parser.add_argument("--height", help="cap height", type=int, default=740)
 
+def probability(value):
+    number = float(value)
+    if not np.isfinite(number) or not 0 <= number <= 1:
+        raise argparse.ArgumentTypeError("must be a finite value between 0 and 1")
+    return number
+
+
+def get_args(argv=None):
+    parser = argparse.ArgumentParser(description="Static ASL alphabet recognition")
+    parser.add_argument("--device", type=device_index, default=0)
+    parser.add_argument("--width", type=positive_int, default=1050)
+    parser.add_argument("--height", type=positive_int, default=740)
     parser.add_argument("--use_static_image_mode", action="store_true")
-    parser.add_argument(
-        "--min_detection_confidence",
-        help="min_detection_confidence",
-        type=float,
-        default=0.7,
-    )
-    parser.add_argument(
-        "--min_tracking_confidence",
-        help="min_tracking_confidence",
-        type=int,
-        default=0.5,
-    )
+    parser.add_argument("--min_detection_confidence", type=probability, default=0.7)
+    parser.add_argument("--min_tracking_confidence", type=probability, default=0.5)
+    parser.add_argument("--confidence_threshold", type=probability, default=0.7)
+    parser.add_argument("--stable_frames", type=positive_int, default=5)
+    return parser.parse_args(argv)
 
-    args = parser.parse_args()
 
-    return args
+class FrameProcessor:
+    """Created and used exclusively by the camera/inference worker."""
+    def __init__(self, args, gate):
+        import mediapipe as mp
+        self.gate = gate
+        with (PROJECT_ROOT / "model/keypoint_classifier/keypoint_classifier_label.csv").open(encoding="utf-8-sig") as stream:
+            self.labels = [row[0] for row in csv.reader(stream)]
+        if self.labels != list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+            raise ValueError("Label file must contain A–Z in model output order")
+        self.classifier = KeyPointClassifier()
+        self.hands = mp.solutions.hands.Hands(
+            static_image_mode=args.use_static_image_mode, max_num_hands=1,
+            min_detection_confidence=args.min_detection_confidence,
+            min_tracking_confidence=args.min_tracking_confidence,
+        )
+
+    def process(self, frame):
+        image = cv.flip(frame, 1)
+        results = self.hands.process(cv.cvtColor(image, cv.COLOR_BGR2RGB))
+        if not results.multi_hand_landmarks:
+            self.gate.observe()
+            return image
+        hand = results.multi_hand_landmarks[0]
+        handedness = results.multi_handedness[0]
+        landmarks = calc_landmark_list(image, hand)
+        index, confidence = self.classifier.predict(pre_process_landmark(landmarks))
+        state = self.gate.observe(self.labels[index], confidence)
+        bounds = calc_bounding_rect(image, hand)
+        draw_bounding_rect(True, image, bounds)
+        draw_landmarks(image, landmarks)
+        draw_info_text(image, bounds, handedness, state.letter or state.status)
+        return image
+
+    def close(self):
+        self.hands.close()
+
 
 def main():
-    global recognized_character, recognized_characters, recognized_characters_display,gender
-    recognized_character = ''
-    recognized_characters = ''
-    recognized_characters_display = ''
-    username = ''
-    user_info = {'name':'Test','gender':'Male'}
-    
-    count = 5
-    
-    # Initialize Tkinter root window
+    args = get_args()
+    sentence = ""
+    gate = CaptureGate(args.confidence_threshold, args.stable_frames)
+    camera_worker = None
+    speech_worker = SpeechWorker()
+    voice_ids = []
+    last_packet = None
+    closing = False
+    camera_requested = False
+    dashboard_opened = False
+
+    # Brutalist dashboard palette
+    ink = "#171717"
+    paper = "#F4F0E8"
+    white = "#FFFFFF"
+    accent = "#C9F264"
+    muted = "#68675F"
+    danger = "#FF6B57"
+
     root = tk.Tk()
-    root.title("Hand Gesture Recognition")
-    
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    
-    window_width = 900
-    window_height = 600
-    
-    x = (screen_width - window_width) // 2
-    y = (screen_height - window_height) // 2
-    
-    root.geometry(f"{window_width}x{window_height}+{x}+{y}")
-    root.config(bg='')
-    
-    # Frames
-    parentFrame = tk.Frame(root,bg='#0A364D')
-    loading = tk.Frame(root, bg='#0A364D',width=200, height=100)
-    # Info Form
-    formFrame = tk.Frame(parentFrame, bg="#0A364D")
-     # Main Frame of Project
-    mainFrame = tk.Frame(parentFrame,bg='#0A364D')
-   
-    # Titlebar
-    # root.overrideredirect(True)
-    title_bar = tk.Frame(parentFrame,bg='#0A364D',relief='raised',bd=0,highlightthickness=0)
-    titleName = tk.Label(title_bar,text='   American Sign Language Recognization System for Mutes',pady=3,padx=(window_width//2),justify='center',bg='#0A364D',fg='white',font=("Arial", 12))
-    close_btn = tk.Button(title_bar,text=' X ',command=root.destroy,bg='#0A364D',pady=3,padx=5,activebackground='red',bd=0,font='bold',fg='white',highlightthickness=0)
-    
-    # title_bar.pack(fill="x")
-    # close_btn.pack(side='right')
-    
-    # Window fucntions
-    def move_window(event):
-        root.geometry('+{0}+{1}'.format(event.x_root,event.y_root))
-    
-    def change_on_hovering(event):
-        # global close_btn
-        close_btn['bg'] = 'red'
-        
-    def return_to_normal(evetn):
-        # global close_btn
-        close_btn['bg'] = '#0A364D'
-    
-    title_bar.bind('<B1-Motion>',move_window)
-    close_btn.bind('<Enter>',change_on_hovering)
-    close_btn.bind('<Leave>',return_to_normal)
-    
-    
-   
-    loading.pack(fill='both', expand=1, pady=00, padx=00)
-    
-    # Create a label for the loading message
-    loading_label = ttk.Label(loading,background='#0A364D', text="Loading...", font=("Arial", 20),borderwidth=1,foreground='white')
-    loading_label.pack(pady=50)
-    lbl = ImageLabel(loading,borderwidth=0)
-    lbl.pack()
-    lbl.load('./assets/loading1.gif')
-    
-    def countdown(count):
-        if count >0:
-            root.after(1000,countdown, count-1)
-            print(count)
-        if count == 1:
-            parentFrame.pack(fill='both', expand=1)
-            formFrame.pack(fill='both', expand=1)
-            loading.pack_forget()
-    
-    countdown(count)
-    
-    
-    formTitle = tk.Label(formFrame,background='#0A364D', foreground='white', text="Welcome to American Sign Language Recognization System", font=('Arial',23))
-    b_image = Image.open("./assets/banner.jpg")
-    b_image = b_image.resize((900,200))
-    banner = ImageTk.PhotoImage(b_image)
-    print(banner)
-    bannerLabel = tk.Label(formFrame, image=banner)
-    bannerLabel.pack(pady=20)
-    
-    formTitle.pack()
-    
-    # Input Fields
-    # Styling
-    label_font = ("Helvetica", 18)
-    entry_font = ("Helvetica", 11)
-    button_font = ("Helvetica", 12, "bold")
-    button_bg = "#3c8ce7"
-    button_fg = "#ffffff"
-    # Title Label
-    
+    root.title("Sign Language Studio")
+    root.geometry("1180x780")
+    root.minsize(940, 660)
+    root.configure(bg=paper)
 
-    # Set up the name input
-    tk.Label(formFrame, text="Enter Your Name:", font=("Helvetica", 14, "bold"), bg="#0A364D", fg="white").pack(pady=(10, 0))
+    def show_window():
+        if sys.platform == "darwin":
+            try:
+                from AppKit import NSApplication, NSApplicationActivationPolicyRegular
+                application = NSApplication.sharedApplication()
+                application.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+                application.activateIgnoringOtherApps_(True)
+            except Exception as error:
+                print(f"Window activation: {error}", file=sys.stderr)
+        root.deiconify()
+        root.lift()
+        name_entry.focus_set()
+
+    root.after(100, show_window)
+
+
+    parentFrame = tk.Frame(root, bg=paper)
+    loading = tk.Frame(root, bg=ink)
+    formFrame = tk.Frame(parentFrame, bg=paper)
+    mainFrame = tk.Frame(parentFrame, bg=paper)
+
+    loading.pack(fill="both", expand=True)
+    loading_label = tk.Label(
+        loading, text="SIGN / STUDIO", font=("Arial", 28, "bold"),
+        bg=ink, fg=accent,
+    )
+    loading_label.pack(expand=True)
+
+    def countdown(remaining):
+        if remaining:
+            root.after(250, countdown, remaining - 1)
+            return
+        loading.pack_forget()
+        parentFrame.pack(fill="both", expand=True)
+        if not dashboard_opened:
+            formFrame.pack(fill="both", expand=True)
+
+    root.after(250, countdown, 1)
+
+    formFrame.columnconfigure(0, weight=1)
+    formFrame.rowconfigure(0, weight=1)
+    welcome_card = tk.Frame(
+        formFrame, bg=white, padx=42, pady=36,
+        highlightbackground=ink, highlightthickness=3,
+    )
+    welcome_card.grid(row=0, column=0)
+    tk.Label(
+        welcome_card, text="SIGN / STUDIO", font=("Arial", 32, "bold"),
+        bg=white, fg=ink,
+    ).pack(anchor="w")
+    tk.Label(
+        welcome_card, text="ASL alphabet recognition", font=("Arial", 16),
+        bg=white, fg=muted,
+    ).pack(anchor="w", pady=(4, 24))
+    tk.Label(
+        welcome_card,
+        text="1. Open the dashboard to start your camera.\n"
+             "2. Hold one hand still until the status says READY.\n"
+             "3. Press G to capture, Space between words, S to speak.",
+        font=("Arial", 12), bg=white, fg=ink, justify="left", wraplength=420,
+    ).pack(anchor="w", pady=(0, 20))
+
+    tk.Label(
+        welcome_card, text="YOUR NAME", font=("Arial", 11, "bold"),
+        bg=white, fg=ink,
+    ).pack(anchor="w")
     name_var = StringVar()
-    name_entry = tk.Entry(formFrame,borderwidth=0, textvariable=name_var, font=("Helvetica", 18, "bold"), width=25, justify='center')
-    name_entry.pack(pady=20)
+    name_entry = tk.Entry(
+        welcome_card, textvariable=name_var, font=("Arial", 18),
+        relief="solid", bd=2, width=30,
+    )
+    name_entry.pack(fill="x", pady=(6, 18), ipady=8)
+    tk.Label(
+        welcome_card, text="SPEECH VOICE", font=("Arial", 11, "bold"),
+        bg=white, fg=ink,
+    ).pack(anchor="w")
+    voice_var = StringVar(value="Loading installed voices…")
+    voice_picker = ttk.Combobox(welcome_card, textvariable=voice_var, state="disabled", width=38)
+    voice_picker.pack(fill="x", pady=(6, 8))
+    speech_status = tk.Label(welcome_card, text="SPEECH / STARTING", bg=white, fg=muted, wraplength=360)
+    speech_status.pack(anchor="w", pady=(0, 16))
 
-    # Set up gender radio buttons
-    tk.Label(formFrame, text="Select Gender:", font=("Helvetica", 14, "bold"), bg="#0A364D", fg="white").pack(pady=(20, 0))
-    gender_var = StringVar(value="Male")
-    gender_frame = tk.Frame(formFrame, bg="#0A364D")
-    gender_frame.pack(pady=5)
-    Radiobutton(gender_frame, text="Male", variable=gender_var, value="Male", font=entry_font, bg="#0A364D",fg='gray').pack(side="left", padx=5)
-    Radiobutton(gender_frame, text="Female", variable=gender_var, value="Female", font=entry_font, bg="#0A364D",fg='gray').pack(side="left", padx=5)
-    
+    def start_camera():
+        nonlocal camera_worker
+        if closing or not camera_requested:
+            return
+        if camera_worker is not None and camera_worker.is_alive() and camera_worker.stop_event.is_set():
+            root.after(100, start_camera)
+            return
+        if camera_worker is None or not camera_worker.is_alive():
+            camera_worker = CameraWorker(lambda: FrameProcessor(args, gate), gate,
+                                         device=int(camera_var.get()), width=args.width, height=args.height)
+            camera_worker.start()
+
     def on_submit():
-        user_info["name"] = name_var.get()
-        user_info["gender"] = gender_var.get()
-        global username, gender
-        username = user_info['name']
-        gender = user_info['gender']
-        label1.config(text=username+' is saying...')
-        print(username)
-        # mainFrame.pack(fill='both', expand=1)
-        titleName.pack(side='left')
-        
-        mainFrame.pack()
+        nonlocal camera_requested, dashboard_opened
+        camera_requested = True
+        dashboard_opened = True
+        loading.pack_forget()
+        parentFrame.pack(fill="both", expand=True)
+        username = name_var.get().strip() or "Guest"
+        label1.config(text=f"SESSION / {username.upper()}")
         formFrame.pack_forget()
-        
-    # Submit Button
-    btn_border = tk.Frame(formFrame,highlightbackground='white',highlightthickness=2,bd=0)
-    submit_button = tk.Button(btn_border, text="Start Conversation", command=on_submit, font=button_font,borderwidth=0, bg='#0A364D', fg='white', width=15)
-    submit_button.pack()
-    btn_border.pack(pady=20)
-    
-    
-    
-    
-   
-    # Camera setup
-    cap = cv.VideoCapture(0)  # Replace with your camera device or video input
+        mainFrame.pack(fill="both", expand=True)
+        name_entry.focus_set()
+        root.focus_set()
+        start_camera()
 
-    # Tkinter Canvas to display OpenCV frame
-    canvas = tk.Label(mainFrame, width=500, height=350)
-    canvas.pack(expand=1,pady=0)
-    # Showing Recognized Text
-    label1 = tk.Label(mainFrame, text=username, font=("Arial",14),bg='#0A364D',fg='white')
-    label1.pack(pady=10)
-    label = tk.Label(mainFrame, text='', font=("Arial",18),bg='#0A364D',fg='white')
-    label.pack(pady=5)
+    tk.Button(
+        welcome_card, text="OPEN DASHBOARD  →", command=on_submit,
+        font=("Arial", 14, "bold"), bg=accent, fg=ink,
+        activebackground=accent, relief="solid", bd=2, padx=14, pady=10,
+    ).pack(fill="x")
 
-    # Start and Clear buttons
-    def capture_character():  
-        global recognized_character,recognized_characters              
-        recognized_characters += recognized_character
-        recognized_character = ''
-        label.config(text=recognized_characters)
-        print(recognized_characters)
-        
-    def add_space():  
-        global recognized_character,recognized_characters              
-        recognized_characters += ' '
-        recognized_character = ''
-        label.config(text=recognized_characters)
-        print(recognized_characters)
-        
+    dashboard_header = tk.Frame(mainFrame, bg=ink, padx=20, pady=14)
+    dashboard_header.pack(fill="x", padx=18, pady=(18, 10))
+    tk.Label(
+        dashboard_header, text="SIGN / STUDIO", font=("Arial", 20, "bold"),
+        bg=ink, fg=accent,
+    ).pack(side="left")
+    label1 = tk.Label(
+        dashboard_header, text="SESSION / GUEST", font=("Arial", 12, "bold"),
+        bg=ink, fg=white,
+    )
+    label1.pack(side="right")
+
+    dashboard_body = tk.Frame(mainFrame, bg=paper, padx=18, pady=4)
+    dashboard_body.pack(fill="both", expand=True)
+    dashboard_body.columnconfigure(0, weight=1, minsize=320)
+    dashboard_body.columnconfigure(1, weight=0, minsize=310)
+    dashboard_body.rowconfigure(0, weight=1)
+    camera_panel = tk.Frame(
+        dashboard_body, bg=white, padx=14, pady=14,
+        highlightbackground=ink, highlightthickness=3,
+    )
+    camera_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+    camera_panel.columnconfigure(0, weight=1)
+    camera_panel.rowconfigure(1, weight=1)
+    side_panel = tk.Frame(
+        dashboard_body, bg=white, width=310, padx=12, pady=12,
+        highlightbackground=ink, highlightthickness=3,
+    )
+    side_panel.grid(row=0, column=1, sticky="ns")
+    side_panel.pack_propagate(False)
+
+    tk.Label(
+        camera_panel, text="01 / LIVE CAMERA", font=("Arial", 14, "bold"),
+        bg=white, fg=ink,
+    ).grid(row=0, column=0, sticky="w", pady=(0, 10))
+    canvas = VideoPreview(camera_panel, bg=ink)
+    canvas.grid(row=1, column=0, sticky="nsew")
+    camera_status = tk.Label(
+        camera_panel, text="CAMERA / STARTING", font=("Arial", 10, "bold"),
+        bg=white, fg=muted, anchor="w",
+    )
+    camera_status.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+    camera_controls = tk.Frame(camera_panel, bg=white)
+    camera_controls.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+    tk.Label(camera_controls, text="CAMERA INDEX", bg=white, fg=ink).pack(side="left")
+    camera_var = StringVar(value=str(args.device))
+    camera_picker = tk.Spinbox(camera_controls, from_=0, to=99, textvariable=camera_var, width=4)
+    camera_picker.pack(side="left", padx=8)
+
+    def select_camera():
+        nonlocal last_packet, camera_requested
+        try:
+            device = device_index(camera_var.get())
+        except (ValueError, argparse.ArgumentTypeError):
+            camera_status.configure(text="CAMERA INDEX MUST BE A NONNEGATIVE INTEGER", fg=danger)
+            return
+        camera_requested = True
+        gate.reset()
+        last_packet = None
+        camera_status.configure(text=f"CAMERA {device} / CONNECTING", fg=muted)
+        canvas.show_message("CONNECTING CAMERA")
+        if camera_worker is not None and camera_worker.is_alive() and not camera_worker.stop_event.is_set():
+            camera_worker.select(device)
+        else:
+            start_camera()
+
+    tk.Button(camera_controls, text="SELECT / RETRY", command=select_camera).pack(side="left")
+
+    def stop_camera():
+        nonlocal camera_requested, last_packet
+        camera_requested = False
+        gate.reset()
+        last_packet = None
+        if camera_worker is not None:
+            camera_worker.stop()
+        canvas.show_message("CAMERA STOPPED\nSelect / Retry to start again")
+        prediction.configure(text="—")
+        capture_button.configure(state="disabled")
+        camera_status.configure(text="CAMERA STOPPED / SELECT RETRY TO START", fg=muted)
+
+    tk.Button(camera_controls, text="STOP CAMERA", command=stop_camera).pack(side="left", padx=8)
+    tk.Label(camera_panel, text="Hold one hand still → wait for READY → press G to capture.",
+             font=("Arial", 11), bg=white, fg=ink).grid(row=4, column=0, sticky="w", pady=(6, 0))
+
+
+
+    tk.Label(
+        side_panel, text="02 / RECOGNITION", font=("Arial", 14, "bold"),
+        bg=white, fg=ink,
+    ).pack(anchor="w")
+    prediction_card = tk.Frame(
+        side_panel, bg=accent, padx=14, pady=8,
+        highlightbackground=ink, highlightthickness=2,
+    )
+    prediction_card.pack(fill="x", pady=(10, 18))
+    tk.Label(
+        prediction_card, text="CURRENT LETTER", font=("Arial", 10, "bold"),
+        bg=accent, fg=ink,
+    ).pack(anchor="w")
+    prediction = tk.Label(
+        prediction_card, text="—", font=("Arial", 32, "bold"),
+        bg=accent, fg=ink,
+    )
+    prediction.pack(anchor="w")
+    tk.Label(
+        side_panel, text="03 / SENTENCE", font=("Arial", 14, "bold"),
+        bg=white, fg=ink,
+    ).pack(anchor="w")
+    sentence_frame = tk.Frame(side_panel, bg=paper)
+    sentence_frame.pack(fill="x", pady=(8, 10))
+    label = tk.Text(sentence_frame, font=("Arial", 14), height=3, width=20,
+                    wrap="word", relief="solid", bd=2, padx=6, pady=6,
+                    bg=paper, fg=ink, state="disabled")
+    sentence_scroll = ttk.Scrollbar(sentence_frame, command=label.yview)
+    label.configure(yscrollcommand=sentence_scroll.set)
+    sentence_scroll.pack(side="right", fill="y")
+    label.pack(side="left", fill="both", expand=True)
+
+    def show_sentence():
+        label.configure(state="normal")
+        label.delete("1.0", "end")
+        label.insert("1.0", sentence)
+        label.configure(state="disabled")
+        label.see("end")
+
+    tk.Label(
+        side_panel, text="ACTIONS / G · SPACE · D · C · S",
+        font=("Arial", 9, "bold"), bg=white, fg=muted,
+    ).pack(anchor="w", pady=(0, 8))
+    controls_frame = tk.Frame(side_panel, bg=white)
+    controls_frame.pack(fill="x")
+
+    def capture_character():
+        nonlocal sentence
+        if camera_worker is None or last_packet is None or last_packet.generation != camera_worker.generation:
+            return
+        letter = gate.capture()
+        if letter:
+            sentence += letter
+            show_sentence()
+            capture_button.configure(state="disabled")
+
+    def add_space():
+        nonlocal sentence
+        gate.reset()
+        sentence += " "
+        show_sentence()
 
     def clear_text():
-        global recognized_character,recognized_characters, recognized_characters_display
-        recognized_characters = ""
-        recognized_character = ""
-        recognized_characters_display = ""
-        label.config(text=recognized_characters)
-        print("Cleared recognized text.")
-    
-    def delete_text():
-        global recognized_character,recognized_characters, recognized_characters_display
-        recognized_characters = recognized_characters[:-1]
-        recognized_character = ""
-        recognized_characters_display = ""
-        label.config(text=recognized_characters)
-        print("Cleared recognized text.")
-        
-    def text_to_speech():
-        """Convert text to speech and play it."""
-    # print(speakerGender)
-        text = recognized_characters
-        if text:
-            try:
-                    engine = pyttsx3.init()
-                    # Set voice to female
-                    voices = engine.getProperty('voices')
-                    if gender == 'Male':
-                        engine.setProperty('voice', voices[0].id)                
-                    else:
-                        engine.setProperty('voice', voices[1].id)                
-                    engine.setProperty('rate', 125)                
-                    engine.say(text)
-                    engine.runAndWait()
-            except Exception as e:
-                        print(f"An error occurred: {e}")
+        nonlocal sentence
+        gate.reset()
+        sentence = ""
+        show_sentence()
 
+    def delete_text():
+        nonlocal sentence
+        gate.reset()
+        sentence = sentence[:-1]
+        show_sentence()
+
+    def text_to_speech():
+        if sentence.strip():
+            index = voice_picker.current()
+            voice_id = voice_ids[index] if 0 <= index < len(voice_ids) else None
+            speech_worker.speak(sentence, voice_id)
 
     def on_key_press(event):
+        if not mainFrame.winfo_ismapped() or isinstance(event.widget, (tk.Entry, tk.Spinbox, ttk.Combobox)):
+            return
         if event.char == 'g' or event.char == 'G':
             capture_character()
         elif event.char == 'd' or event.char == 'D':
@@ -303,129 +413,118 @@ def main():
             text_to_speech()
         elif event.char == ' ':
             add_space()
-        print(event.char)
-    
+
     root.bind("<Key>", on_key_press)
 
-    capture_button = tk.Button(mainFrame, text="Capture (G/g)", font=("Helvetica", 14, "bold"), bg="#3c8ce7", fg="white", command=capture_character)
-    capture_button.pack(side="left", padx=10)
-    
-    space_button = tk.Button(mainFrame, text="Space (space_bar)", font=("Helvetica", 14, "bold"), bg="red", fg="white", command=add_space)
-    space_button.pack(side="left", padx=10)
-    
-    delete_button = tk.Button(mainFrame, text="Delete (D/d)", font=("Helvetica", 14, "bold"), bg="red", fg="white", command=delete_text)
-    delete_button.pack(side="left", padx=10)
-    
-    clear_button = tk.Button(mainFrame, text="Clear (C/c)", font=("Helvetica", 14, "bold"), bg="red", fg="white", command=clear_text)
-    clear_button.pack(side="left", padx=10)
-    
-    speak_button = tk.Button(mainFrame, text="Speak (S/s)", font=("Helvetica", 14, "bold"), bg="red", fg="white", command=text_to_speech)
-    speak_button.pack(side="left", padx=10)
+    def action_button(text, bg, command):
+        return tk.Button(
+            controls_frame, text=text, command=command,
+            font=("Arial", 12, "bold"), bg=bg, fg=ink,
+            activebackground=bg, relief="solid", bd=2, anchor="w",
+            padx=10, pady=4,
+        )
+
+    capture_button = action_button("CAPTURE LETTER  /  G", accent, capture_character)
+    capture_button.configure(state="disabled")
+    capture_button.pack(fill="x", pady=2)
+    space_button = action_button("INSERT SPACE  /  SPACE", paper, add_space)
+    space_button.pack(fill="x", pady=2)
+    delete_button = action_button("BACKSPACE  /  D", paper, delete_text)
+    delete_button.pack(fill="x", pady=2)
+    clear_button = action_button("CLEAR SENTENCE  /  C", danger, clear_text)
+    clear_button.pack(fill="x", pady=2)
+    speak_button = action_button("SPEAK SENTENCE  /  S", ink, text_to_speech)
+    speak_button.configure(fg=white, activeforeground=white)
+    speak_button.configure(state="disabled")
+    speak_button.pack(fill="x", pady=2)
+    dashboard_speech_status = tk.Label(side_panel, text="SPEECH / STARTING", bg=white, fg=muted, wraplength=260)
+    dashboard_speech_status.pack(fill="x", pady=6)
 
 
-    args = get_args()
-
-    cap_device = args.device
-    cap_width = args.width
-    cap_height = args.height
-
-    use_static_image_mode = args.use_static_image_mode
-    min_detection_confidence = args.min_detection_confidence
-    min_tracking_confidence = args.min_tracking_confidence
-
-    use_brect = True
-    # Model load #############################################################
-    mp_hands = mp.solutions.hands
-    hands = mp_hands.Hands(
-        static_image_mode=use_static_image_mode,
-        max_num_hands=2,
-        min_detection_confidence=min_detection_confidence,
-        min_tracking_confidence=min_tracking_confidence,
-    )
-
-    keypoint_classifier = KeyPointClassifier()
-
-    # Read labels ###########################################################
-    with open(
-        "model/keypoint_classifier/keypoint_classifier_label.csv", encoding="utf-8-sig"
-    ) as f:
-        keypoint_classifier_labels = csv.reader(f)
-        keypoint_classifier_labels = [row[0] for row in keypoint_classifier_labels]
-
-    # FPS Measurement ########################################################
-    cvFpsCalc = CvFpsCalc(buffer_len=10)
-
-    #  ########################################################################
-    mode = 0
-
-    # Function to process frames
     def update_frame():
-        ret, frame = cap.read()
-        if ret:
-            # Flip and process frame for display (adjust as needed for hand recognition)
-            frame = cv.flip(frame, 1)
-            frame_rgb = cv.cvtColor(frame, cv.COLOR_BGRA2RGB)
-            debug_image = copy.deepcopy(frame)
-             # Process Key (ESC: end) #################################################
-            key = cv.waitKey(1)
-            # print(select_mode(key, mode))
-            # number, mode = select_mode(key, mode)
-            number, mode = 1,0
-            results = hands.process(frame_rgb)
-            if results.multi_hand_landmarks is not None:
-                for hand_landmarks, handedness in zip(
-                    results.multi_hand_landmarks, results.multi_handedness
-                ):
-                    # Bounding box calculation
-                    brect = calc_bounding_rect(debug_image, hand_landmarks)
-                    # Landmark calculation
-                    landmark_list = calc_landmark_list(debug_image, hand_landmarks)
+        nonlocal last_packet
+        if closing:
+            return
+        while True:
+            try:
+                event = speech_worker.events.get_nowait()
+            except Empty:
+                break
+            if event[0] == "voices":
+                voices, default_id = event[1:]
+                voice_ids[:] = [voice_id for voice_id, _ in voices]
+                names = [name for _, name in voices]
+                voice_picker.configure(values=names, state="readonly" if names else "disabled")
+                if names:
+                    voice_picker.current(voice_ids.index(default_id) if default_id in voice_ids else 0)
+                else:
+                    voice_var.set("System default")
+                message = "SPEECH READY"
+                speak_button.configure(state="normal")
+            else:
+                message = event[1]
+                speak_button.configure(state="disabled" if event[0] == "error" or message == "SPEAKING" else "normal")
+            color = danger if event[0] == "error" else muted
+            speech_status.configure(text=message, fg=color)
+            dashboard_speech_status.configure(text=message, fg=color)
+        if camera_worker is not None and camera_requested and not camera_worker.stop_event.is_set():
+            try:
+                packet = camera_worker.packets.get_nowait()
+            except Empty:
+                packet = None
+            if packet is not None and packet.generation == camera_worker.generation:
+                last_packet = packet
+                if packet.image is None:
+                    canvas.show_message(packet.status)
+            state = gate.snapshot()
+            prediction.configure(text=state.letter or ("?" if state.status == "UNCERTAIN" else "—"))
+            capture_button.configure(state="normal" if state.ready else "disabled")
+            if last_packet is not None:
+                status = last_packet.status
+                if last_packet.image is not None:
+                    status += f" / {state.status} / {state.confidence:.0%} / {state.frames}/{args.stable_frames}"
+                    if time.monotonic() - last_packet.created_at > 1:
+                        status = "CAMERA / WAITING FOR FRAME"
+                    elif packet is not None:
+                        canvas.show_frame(last_packet.image)
+                camera_status.configure(text=status, fg=muted if last_packet.image is not None else danger)
+        root.after(30, update_frame)
 
-                    # Conversion to relative coordinates / normalized coordinates
-                    pre_processed_landmark_list = pre_process_landmark(landmark_list)
+    def close():
+        nonlocal closing, camera_requested
+        closing = True
+        camera_requested = False
+        gate.reset()
+        if camera_worker is not None:
+            camera_worker.stop()
+        speech_worker.stop()
+        root.destroy()
 
-                    # Write to the dataset file
-                    logging_csv(number, mode, pre_processed_landmark_list)
+    def report_ui_error(error_type, error, traceback):
+        nonlocal camera_requested
+        camera_requested = False
+        gate.reset()
+        if camera_worker is not None:
+            camera_worker.stop()
+        capture_button.configure(state="disabled")
+        camera_status.configure(text=f"PREVIEW ERROR / {error}", fg=danger)
+        print(f"PREVIEW ERROR / {error_type.__name__}: {error}", file=sys.stderr)
+        root.after(30, update_frame)
 
-                    # Hand sign classification
-                    hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
-                    global recognized_character
-                    recognized_character = keypoint_classifier_labels[hand_sign_id]
-                    # recognized_characters += recognized_character
-                    # print(recognized_character)
-                    # Finger gesture classification
-                    finger_gesture_id = 0
+    root.report_callback_exception = report_ui_error
+    root.protocol("WM_DELETE_WINDOW", close)
+    speech_worker.start()
+    root.after(30, update_frame)
+    try:
+        root.mainloop()
+    finally:
+        if camera_worker is not None:
+            camera_worker.stop()
+            camera_worker.join(timeout=2)
+        speech_worker.stop()
+        speech_worker.join(timeout=2)
+        cv.destroyAllWindows()
 
-                    # Drawing part
-                    debug_image = draw_bounding_rect(use_brect, debug_image, brect)
-                    debug_image = draw_landmarks(debug_image, landmark_list)
-                    debug_image = draw_info_text(
-                        debug_image,
-                        brect,
-                        handedness,
-                        keypoint_classifier_labels[hand_sign_id],
-                    )
-            
-            img = Image.fromarray(debug_image)
-            imgtk = ImageTk.PhotoImage(image=img)
-            canvas.imgtk = imgtk
-            canvas.configure(image=imgtk)
-            
-            # Placeholder for recognition process - Add recognition updates here
-            recognized_characters_display = "Recognized Text Here"  # Replace with actual recognized characters
-
-        # Repeat after a delay
-        root.after(10, update_frame)
-
-    # Start the video feed update
-    update_frame()
-
-    # Run the Tkinter event loop
-    root.mainloop()
-   
-    # Release resources after Tkinter window is closed
-    cap.release()
-    cv.destroyAllWindows()
 
 def select_mode(key, mode):
     number = -1
@@ -477,37 +576,11 @@ def calc_landmark_list(image, landmarks):
     return landmark_point
 
 
-def pre_process_landmark(landmark_list):
-    temp_landmark_list = copy.deepcopy(landmark_list)
-
-    # Convert to relative coordinates
-    base_x, base_y = 0, 0
-    for index, landmark_point in enumerate(temp_landmark_list):
-        if index == 0:
-            base_x, base_y = landmark_point[0], landmark_point[1]
-
-        temp_landmark_list[index][0] = temp_landmark_list[index][0] - base_x
-        temp_landmark_list[index][1] = temp_landmark_list[index][1] - base_y
-
-    # Convert to a one-dimensional list
-    temp_landmark_list = list(itertools.chain.from_iterable(temp_landmark_list))
-
-    # Normalization
-    max_value = max(list(map(abs, temp_landmark_list)))
-
-    def normalize_(n):
-        return n / max_value
-
-    temp_landmark_list = list(map(normalize_, temp_landmark_list))
-
-    return temp_landmark_list
-
-
 def logging_csv(number, mode, landmark_list):
     if mode == 0:
         pass
     if (mode == 1 or mode == 2) and (0 <= number <= 35):
-        csv_path = "model/keypoint_classifier/keypoint.csv"
+        csv_path = PROJECT_ROOT / "model/keypoint_classifier/keypoint.csv"
         with open(csv_path, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([number, *landmark_list])
@@ -722,34 +795,34 @@ def draw_landmarks(image, landmark_point):
 
     # Key Points
     for index, landmark in enumerate(landmark_point):
-        if index == 0:  # 
+        if index == 0:  #
             cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 1:  # 
+        if index == 1:  #
             cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 2:  # 
+        if index == 2:  #
             cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 3:  # 
+        if index == 3:  #
             cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 4:  # 
+        if index == 4:  #
             cv.circle(image, (landmark[0], landmark[1]), 8, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
-        if index == 5:  # 
+        if index == 5:  #
             cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 6:  # 
+        if index == 6:  #
             cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 7:  # 
+        if index == 7:  #
             cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
-        if index == 8:  # 
+        if index == 8:  #
             cv.circle(image, (landmark[0], landmark[1]), 8, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 8, (0, 0, 0), 1)
-        if index == 9:  # 
+        if index == 9:  #
             cv.circle(image, (landmark[0], landmark[1]), 5, (255, 255, 255), -1)
             cv.circle(image, (landmark[0], landmark[1]), 5, (0, 0, 0), 1)
         if index == 10:  #
@@ -873,4 +946,8 @@ def draw_info(image, fps, mode, number):
 
 # Execute main
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        print(f"STARTUP ERROR / {error}", file=sys.stderr)
+        sys.exit(1)
