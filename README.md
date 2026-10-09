@@ -127,8 +127,8 @@ split/model hashes are in [evaluation.json](model/keypoint_classifier/evaluation
 ## Quick start
 
 ```bash
-git clone https://github.com/Tanmaysune/sign_language.git
-cd sign_language
+git clone https://github.com/Anjalee117/Detection_gestures.git
+cd Detection_gestures
 python -m venv venv
 venv\Scripts\activate          # Linux or macOS: source venv/bin/activate
 python -m pip install -r requirements.txt

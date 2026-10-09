@@ -11,8 +11,8 @@ Windows and Linux still require platform testing.
 For a fresh macOS installation, use python.org Python with bundled Tkinter.
 
 ```bash
-git clone https://github.com/Tanmaysune/sign_language.git
-cd sign_language
+git clone https://github.com/Anjalee117/Detection_gestures.git
+cd Detection_gestures
 python3 -m venv venv
 source venv/bin/activate
 python -m pip install --upgrade pip
